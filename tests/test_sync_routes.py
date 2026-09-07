@@ -11,10 +11,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-# Importing the app builds Settings, which insists on DATABASE_URL. Skipped rather than
-# raised so a checkout with no .env still collects the rest of the suite.
-if not os.environ.get("DATABASE_URL"):
-    pytest.skip("DATABASE_URL is not set", allow_module_level=True)
+# Importing the app builds Settings, which insists on DATABASE_URL. These tests never
+# reach a database, so an unreachable placeholder satisfies it and they keep running on
+# a checkout with no .env — create_engine() only parses the URL, it does not connect.
+# setdefault, so a real DATABASE_URL is left alone where one is configured.
+os.environ.setdefault("DATABASE_URL", "postgresql+psycopg://inert:inert@127.0.0.1:1/inert")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
