@@ -1,0 +1,34 @@
+{
+  "id": "msg_001",
+  "threadId": "thread_001",
+  "labelIds": [
+    "INBOX",
+    "UNREAD"
+  ],
+  "internalDate": "1734000000000",
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      {
+        "name": "Subject",
+        "value": "Damaged order #4521"
+      },
+      {
+        "name": "From",
+        "value": "Jordan Lee <jordan@example.com>"
+      },
+      {
+        "name": "Date",
+        "value": "Mon, 08 Dec 2025 10:15:00 -0800"
+      },
+      {
+        "name": "Message-ID",
+        "value": "<CADnq5_abc123@mail.example.com>"
+      }
+    ],
+    "body": {
+      "data": "SGkgdGVhbSwKCk15IG9yZGVyICM0NTIxIGFycml2ZWQgZGFtYWdlZC4gQ2FuIHlvdSBzZW5kIGEgcmVwbGFjZW1lbnQ_CgpUaGFua3MsCkpvcmRhbg=="
+    },
+    "parts": []
+  }
+}
