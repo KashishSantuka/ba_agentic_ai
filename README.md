@@ -89,6 +89,7 @@ Interactive API docs: <http://localhost:8000/docs>
 | `GET /auth/gmail/connections` | connected mailboxes (never returns tokens) |
 | `POST /sync` | fetch new mail for every mailbox |
 | `POST /sync/{connection_id}` | fetch new mail for one mailbox |
+| `POST /classify` | classify one batch of pending documents |
 
 To connect a mailbox, open in a browser:
 
@@ -105,6 +106,7 @@ accident — whichever account approves is the one that gets read.
 uv run python -m src.interfaces.cli init-db
 uv run python -m src.interfaces.cli connections
 uv run python -m src.interfaces.cli sync
+uv run python -m src.interfaces.cli classify
 ```
 
 Connecting a mailbox is API-only, since OAuth needs a browser redirect to a stable URL.
@@ -113,7 +115,35 @@ Connecting a mailbox is API-only, since OAuth needs a browser redirect to a stab
 
 ```
 */30 * * * * cd /path/to/ba_agentic_ai && uv run python -m src.interfaces.cli sync >> data/sync.log 2>&1
+*/5  * * * * cd /path/to/ba_agentic_ai && uv run python -m src.interfaces.cli classify >> data/classify.log 2>&1
 ```
+
+## Scope classification (AI #1)
+
+Every stored document starts `pending`. A run claims a batch, asks the model whether the
+email carries enough business substance to be worth a later stage, and records the answer:
+
+```
+pending ──claim──> processing ──answered──> completed
+                        │
+                        └──failed──> pending  (attempts 1 and 2)
+                                     review   (attempt 3)
+```
+
+Claiming is a single `UPDATE ... FOR UPDATE SKIP LOCKED` that commits before any model
+call. Runs may therefore overlap — a slow batch can outlast the interval that started it —
+without two workers classifying the same email: `SKIP LOCKED` separates them during the
+claim itself, and `processing` keeps them apart for the minutes of model calls afterwards.
+
+A worker that dies leaves documents in `processing`. The next run reclaims anything older
+than `SCOPE_STALE_AFTER_MINUTES` and records the lost attempt, so an email that reliably
+kills its worker runs out of attempts instead of retrying for ever.
+
+`classification_audit` holds one row per attempt, successful or not, never updated. Each
+row carries the exact model and prompt version behind the answer, which is what makes a
+different result months from now explainable rather than merely different. The attempt
+number lives in the row rather than being counted from it, because documents later pass
+through further stages whose rows would otherwise inflate the count.
 
 ## Tests
 

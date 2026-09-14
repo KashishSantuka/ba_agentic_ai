@@ -1,6 +1,18 @@
+import base64
+
 from tests.conftest import load_fixture
 
 from src.infrastructure.gmail.parser import parse_gmail_message
+
+
+def _html_only(message: dict, html: str) -> dict:
+    """Replace the body with a single text/html part, as an HTML-only mail arrives."""
+    message["payload"] = {
+        "mimeType": "text/html",
+        "headers": message["payload"]["headers"],
+        "body": {"data": base64.urlsafe_b64encode(html.encode()).decode()},
+    }
+    return message
 
 
 def test_parse_extracts_expected_fields():
@@ -33,6 +45,57 @@ def test_parse_prefers_plain_text_over_html():
 
     assert "order #4521 arrived damaged" in doc.body_text
     assert "HTML body" not in doc.body_text
+
+
+def test_parse_strips_tags_from_an_html_only_body():
+    message = _html_only(
+        load_fixture("gmail_message_sample.json"),
+        "<html><body><p>The invoice <b>total</b> is wrong.</p></body></html>",
+    )
+
+    doc = parse_gmail_message(message)
+
+    assert "The invoice total is wrong." in doc.body_text
+    assert "<" not in doc.body_text
+
+
+def test_parse_drops_style_and_script_from_an_html_only_body():
+    """The classifier sees only the first characters of the body, so a <style> block long
+    enough to fill that budget would leave it judging the mail on CSS alone."""
+    message = _html_only(
+        load_fixture("gmail_message_sample.json"),
+        """<html><head><style>.x{color:red;padding:20px}</style></head>
+           <body><script>track()</script><p>Payment failed.</p></body></html>""",
+    )
+
+    doc = parse_gmail_message(message)
+
+    assert doc.body_text == "Payment failed."
+
+
+def test_parse_drops_the_zero_width_padding_mail_templates_emit():
+    """Templates pad the preview line with hundreds of invisible characters so the inbox
+    preview shows no body text. They are not whitespace, so they survive that collapse."""
+    message = _html_only(
+        load_fixture("gmail_message_sample.json"),
+        "<p>Invoice overdue.</p>" + "‌ ​" * 400 + "<p>Pay by Friday.</p>",
+    )
+
+    doc = parse_gmail_message(message)
+
+    assert doc.body_text == "Invoice overdue. Pay by Friday."
+
+
+def test_parse_keeps_words_either_side_of_a_tag_apart():
+    message = _html_only(
+        load_fixture("gmail_message_sample.json"),
+        "<p><b>Order</b>failed</p>",
+    )
+
+    doc = parse_gmail_message(message)
+
+    assert "Orderfailed" not in doc.body_text
+    assert "Order failed" == doc.body_text
 
 
 def test_parse_collects_attachments_but_not_the_body_parts():

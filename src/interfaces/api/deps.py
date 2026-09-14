@@ -6,6 +6,7 @@ from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from src import container
+from src.application.use_cases.classify_documents import ClassifyPendingDocuments
 from src.application.use_cases.connect_mailbox import (
     CompleteMailboxConnection,
     StartMailboxConnection,
@@ -44,6 +45,10 @@ def get_sync_mailbox(session: SessionDep) -> SyncMailbox:
 
 def get_sync_all(session: SessionDep) -> SyncAllMailboxes:
     return container.build_sync_all(session)
+
+
+def get_classify_pending(session: SessionDep) -> ClassifyPendingDocuments:
+    return container.build_classify_pending(session)
 
 
 ConnectionsDep = Annotated[ConnectionRepository, Depends(get_connections)]

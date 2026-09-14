@@ -19,6 +19,12 @@ class Settings:
     attachment_dir: Path
     attachment_max_bytes: int
 
+    gemini_api_key: str
+    gemini_model: str
+    scope_batch_size: int
+    scope_body_char_limit: int
+    scope_stale_after_minutes: int
+
 
 def load_settings() -> Settings:
     database_url = os.environ.get("DATABASE_URL")
@@ -41,6 +47,15 @@ def load_settings() -> Settings:
         # Gmail's own send limit is 25MB; anything at that size is recorded but not
         # written, so one enormous file cannot fill the disk unnoticed.
         attachment_max_bytes=int(os.environ.get("ATTACHMENT_MAX_BYTES", str(25 * 1024 * 1024))),
+        gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
+        # Pinned to an exact model rather than a floating alias: an alias repoints without
+        # notice, and the audit log would then credit answers to a model that never ran.
+        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        scope_batch_size=int(os.environ.get("SCOPE_BATCH_SIZE", "100")),
+        scope_body_char_limit=int(os.environ.get("SCOPE_BODY_CHAR_LIMIT", "1000")),
+        # Longer than a batch could reasonably take, so a slow run is never mistaken for
+        # a dead one and its documents handed to a second worker.
+        scope_stale_after_minutes=int(os.environ.get("SCOPE_STALE_AFTER_MINUTES", "15")),
     )
 
 

@@ -6,10 +6,14 @@ second mail provider be added without touching anything above this line.
 """
 
 from abc import ABC, abstractmethod
+from datetime import timedelta
 from typing import Callable, Iterator
 
 from src.domain.entities import (
     Attachment,
+    ClaimedDocument,
+    Classification,
+    ClassificationAttempt,
     EmailConnection,
     OAuthTokens,
     RawDocument,
@@ -95,6 +99,65 @@ class MailboxReader(ABC):
     def fetch_attachment(self, source_id: str, remote_id: str) -> bytes:
         """Download one attachment's bytes. Separate from `fetch_since` because providers
         charge a call per attachment, which only a caller that wants the file should pay."""
+
+
+class DocumentClassifier(ABC):
+    """Decides what a document is, so only what matters is stored and analysed."""
+
+    @property
+    @abstractmethod
+    def model_version(self) -> str:
+        """The exact model answering, never a floating alias — an alias silently
+        repoints and the audit log would then credit a model that never ran."""
+
+    @property
+    @abstractmethod
+    def prompt_version(self) -> str:
+        """Which revision of the instructions produced the answer, so a later shift in
+        the relevant/non_relevant ratio can be attributed to a prompt change."""
+
+    @abstractmethod
+    def classify(self, document: RawDocument) -> Classification:
+        """Raise ClassificationFailed if no usable answer came back. Returning a guess
+        would record a decision nobody made."""
+
+
+class ScopeQueueRepository(ABC):
+    """Hands out documents awaiting classification, one batch at a time, and records
+    where each one ended up."""
+
+    @abstractmethod
+    def claim_pending(self, limit: int) -> list[ClaimedDocument]:
+        """Take up to `limit` pending documents and mark them in progress, atomically.
+
+        Runs may overlap — a batch of slow model calls can outlast the interval that
+        started it — so claiming has to be the thing that excludes a second worker,
+        rather than the caller checking first and writing afterwards.
+        """
+
+    @abstractmethod
+    def mark(self, document_id: int, status: str) -> None: ...
+
+    @abstractmethod
+    def reclaim_stale(self, older_than: timedelta, limit: int) -> list[ClaimedDocument]:
+        """Take over documents left in progress by a worker that died, so they are
+        retried instead of stranded. The caller records the lost attempt.
+
+        Bounded like a claim: repeated crashes accumulate stale documents, and an
+        unbounded sweep would make the next run's length depend on how bad the last
+        outage was.
+        """
+
+
+class ClassificationAuditRepository(ABC):
+    """The append-only record of every classification attempt."""
+
+    @abstractmethod
+    def append(self, attempt: ClassificationAttempt) -> None: ...
+
+    @abstractmethod
+    def last_attempt(self, document_id: int, stage: str) -> int:
+        """The highest attempt number recorded for this document at this stage, or 0."""
 
 
 class DocumentRepository(ABC):
