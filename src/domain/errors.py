@@ -8,3 +8,9 @@ class InvalidOAuthState(DomainError):
 
 class ProviderCursorExpired(DomainError):
     """The provider's incremental cursor is too old to use; fall back to a date search."""
+
+
+class ClassificationFailed(DomainError):
+    """No usable answer came back from the classifier — the call failed, the response was
+    not the agreed shape, or the label was not one we recognise. Carries the reason so it
+    can be written to the audit log and read months later."""

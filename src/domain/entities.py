@@ -42,6 +42,83 @@ class RawDocument:
     metadata: dict = field(default_factory=dict)
 
 
+class ScopeStatus:
+    """How far a document has got through scope classification.
+
+    pending -> processing -> completed | review. `processing` is what keeps two
+    overlapping runs off the same document once the claiming transaction has committed
+    and no database lock is held any more. `review` is terminal: the attempts ran out
+    and a person needs to look.
+    """
+
+    PENDING = "pending"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    REVIEW = "review"
+
+
+class ClassificationLabel:
+    """The only three answers the classifier may give. Anything else is a failed attempt
+    rather than a result, so a model that invents a label cannot poison the audit log."""
+
+    RELEVANT = "relevant"
+    NON_RELEVANT = "non_relevant"
+    JUNK = "junk"
+
+    ALL = frozenset({RELEVANT, NON_RELEVANT, JUNK})
+
+
+class AttemptStatus:
+    SUCCESS = "success"
+    FAILED = "failed"
+
+
+@dataclass
+class Classification:
+    """What the classifier decided about one document — nothing more.
+
+    Deliberately free of model and prompt identifiers: this is the answer, not the
+    circumstances it was produced under. Those live on the attempt, which needs them even
+    when no answer came back at all.
+    """
+
+    label: str
+    confidence: float
+    reason: str
+
+
+@dataclass
+class ClassificationAttempt:
+    """One try at classifying one document, successful or not.
+
+    Written once per attempt and never updated, which is what makes the log a truthful
+    history rather than a current-state table. `attempt` is stored rather than counted
+    because the same document later passes through further stages, and counting rows
+    would mix those in.
+    """
+
+    document_id: int
+    connection_id: int
+    stage: str
+    attempt: int
+    status: str
+    model_version: str
+    prompt_version: str
+    result: Classification | None = None
+    error: str | None = None
+    created_at: datetime | None = None
+
+
+@dataclass
+class ClaimedDocument:
+    """A document handed to the classifier by the queue, with the row id needed to record
+    the outcome against it."""
+
+    id: int
+    connection_id: int
+    document: RawDocument
+
+
 @dataclass
 class OAuthTokens:
     """Credentials issued by a provider for one mailbox."""

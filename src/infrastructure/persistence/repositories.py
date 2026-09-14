@@ -6,22 +6,27 @@ domain never sees a database type and the database is free to change shape.
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from src.domain.entities import (
     Attachment,
+    ClaimedDocument,
+    ClassificationAttempt,
     EmailConnection,
     OAuthTokens,
     RawDocument,
+    ScopeStatus,
     SyncBookmark,
 )
 from src.domain.ports import (
     AttachmentRepository,
     BookmarkRepository,
+    ClassificationAuditRepository,
     ConnectionRepository,
     DocumentRepository,
     OAuthStateStore,
+    ScopeQueueRepository,
 )
 from src.infrastructure.persistence import orm
 
@@ -194,6 +199,132 @@ class SqlAlchemyDocumentRepository(DocumentRepository):
                 orm.Document.source_id == source_id,
             )
         ).scalar_one_or_none()
+
+
+_CLAIMED_COLUMNS = (
+    orm.Document.id,
+    orm.Document.connection_id,
+    orm.Document.source,
+    orm.Document.source_id,
+    orm.Document.subject,
+    orm.Document.sender,
+    orm.Document.sender_email,
+    orm.Document.sent_at,
+    orm.Document.body_text,
+)
+
+
+def _to_claimed(row) -> ClaimedDocument:
+    return ClaimedDocument(
+        id=row.id,
+        connection_id=row.connection_id,
+        document=RawDocument(
+            source=row.source,
+            source_id=row.source_id,
+            subject=row.subject,
+            sender=row.sender,
+            sender_email=row.sender_email,
+            sent_at=row.sent_at,
+            body_text=row.body_text,
+        ),
+    )
+
+
+class SqlAlchemyScopeQueueRepository(ScopeQueueRepository):
+    def __init__(self, session: Session):
+        self._session = session
+
+    def claim_pending(self, limit: int) -> list[ClaimedDocument]:
+        # Selecting and updating in one statement is what makes the claim safe. Reading
+        # the pending rows and writing them back separately would leave a gap in which a
+        # second worker reads the same rows, and both would classify them.
+        #
+        # SKIP LOCKED covers only the instant this statement runs; the move to
+        # PROCESSING is what keeps other workers off these rows for the minutes of model
+        # calls that follow, once this transaction has committed and no lock is held.
+        pending = (
+            select(orm.Document.id)
+            .where(orm.Document.scope_status == ScopeStatus.PENDING)
+            .order_by(orm.Document.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        return self._take(orm.Document.id.in_(pending), ScopeStatus.PROCESSING)
+
+    def reclaim_stale(self, older_than: timedelta, limit: int) -> list[ClaimedDocument]:
+        # Taken over rather than released: these stay PROCESSING with the clock reset, so
+        # they belong to this worker while it records the lost attempt. Putting them
+        # straight back to PENDING would let another worker claim one and write the same
+        # attempt number this one is about to write.
+        cutoff = datetime.now(timezone.utc) - older_than
+        stale = (
+            select(orm.Document.id)
+            .where(
+                orm.Document.scope_status == ScopeStatus.PROCESSING,
+                orm.Document.scope_updated_at < cutoff,
+            )
+            .order_by(orm.Document.id)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+            .scalar_subquery()
+        )
+        return self._take(orm.Document.id.in_(stale), ScopeStatus.PROCESSING)
+
+    def mark(self, document_id: int, status: str) -> None:
+        self._session.execute(
+            update(orm.Document)
+            .where(orm.Document.id == document_id)
+            .values(scope_status=status, scope_updated_at=func.now())
+            .execution_options(synchronize_session=False)
+        )
+        self._session.commit()
+
+    def _take(self, condition, status: str) -> list[ClaimedDocument]:
+        rows = self._session.execute(
+            update(orm.Document)
+            .where(condition)
+            .values(scope_status=status, scope_updated_at=func.now())
+            .returning(*_CLAIMED_COLUMNS)
+            .execution_options(synchronize_session=False)
+        ).all()
+
+        # Committed before the caller starts work: the claim must be visible to other
+        # workers immediately, and no database transaction should stay open across the
+        # model calls that follow.
+        self._session.commit()
+        return [_to_claimed(row) for row in rows]
+
+
+class SqlAlchemyClassificationAuditRepository(ClassificationAuditRepository):
+    def __init__(self, session: Session):
+        self._session = session
+
+    def append(self, attempt: ClassificationAttempt) -> None:
+        self._session.add(
+            orm.ClassificationAudit(
+                document_id=attempt.document_id,
+                connection_id=attempt.connection_id,
+                stage=attempt.stage,
+                attempt=attempt.attempt,
+                status=attempt.status,
+                classification=attempt.result.label if attempt.result else None,
+                confidence=attempt.result.confidence if attempt.result else None,
+                reason=attempt.result.reason if attempt.result else attempt.error,
+                model_version=attempt.model_version,
+                prompt_version=attempt.prompt_version,
+            )
+        )
+        self._session.commit()
+
+    def last_attempt(self, document_id: int, stage: str) -> int:
+        highest = self._session.execute(
+            select(func.max(orm.ClassificationAudit.attempt)).where(
+                orm.ClassificationAudit.document_id == document_id,
+                orm.ClassificationAudit.stage == stage,
+            )
+        ).scalar_one()
+        return highest or 0
 
 
 class SqlAlchemyAttachmentRepository(AttachmentRepository):

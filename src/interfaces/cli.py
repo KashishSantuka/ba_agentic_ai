@@ -48,6 +48,16 @@ def cmd_sync(_args: argparse.Namespace) -> None:
                 print(f"       * {attachment.filename}  ({attachment.size_bytes} bytes)")
 
 
+def cmd_classify(_args: argparse.Namespace) -> None:
+    with SessionLocal() as session:
+        result = container.build_classify_pending(session).execute()
+
+    print(
+        f"{result.classified} classified, {result.failed} failed, "
+        f"{result.sent_to_review} sent to review, {result.reclaimed} reclaimed"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ba-agentic-ai")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -61,6 +71,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("sync", help="Fetch new mail for every connected mailbox").set_defaults(
         func=cmd_sync
     )
+    subparsers.add_parser(
+        "classify", help="Classify one batch of pending documents"
+    ).set_defaults(func=cmd_classify)
 
     return parser
 

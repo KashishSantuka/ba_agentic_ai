@@ -1,6 +1,16 @@
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Text, UniqueConstraint, func
+from sqlalchemy import (
+    BigInteger,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -80,9 +90,14 @@ class IngestionState(Base):
 class Document(Base):
     """The raw record of every message fetched from a mailbox.
 
-    Written once and never updated, so the table stays a faithful copy of what arrived.
+    The message itself — subject, sender, sent_at, body_text and its attachments — is
+    written once and never updated, so the table stays a faithful copy of what arrived.
     The unique constraint below also makes it the record of what has already been
     handled: a message stored here is never fetched again.
+
+    scope_status is the deliberate exception. It is ours rather than the sender's:
+    processing state that records how far this message has got through classification,
+    and it is expected to change. Nothing that came from the mailbox changes with it.
     """
 
     __tablename__ = "documents"
@@ -111,7 +126,76 @@ class Document(Base):
         DateTime(timezone=True), server_default=func.now()
     )
 
-    __table_args__ = (UniqueConstraint("connection_id", "source_id"),)
+    # pending -> processing -> completed | review. Set by the classifier, never by the
+    # mailbox; see the note in the class docstring about why this one column may change.
+    scope_status: Mapped[str] = mapped_column(default="pending", server_default="pending")
+
+    # When scope_status last moved. Without it there is no way to tell a document a
+    # worker is busy with from one whose worker died holding it.
+    scope_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), default=None
+    )
+
+    __table_args__ = (
+        UniqueConstraint("connection_id", "source_id"),
+        # Partial: the classifier only ever searches for pending work, and indexing the
+        # completed rows too would grow the index with every document forever.
+        Index(
+            "ix_documents_pending",
+            "scope_status",
+            postgresql_where=text("scope_status = 'pending'"),
+        ),
+    )
+
+
+class ClassificationAudit(Base):
+    """One row per classification attempt, appended and never updated.
+
+    Kept separate from the document's own scope_status because that column holds only
+    where a document is now; this holds how it got there. A run months from now that
+    classifies differently is explainable only if the model and prompt behind each past
+    answer were recorded at the time, so both are stored per attempt rather than assumed.
+
+    Failures are recorded as fully as successes: an attempt that produced no answer still
+    used up one of the document's three, and a row that is never written is a document
+    that retries forever.
+    """
+
+    __tablename__ = "classification_audit"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True
+    )
+    connection_id: Mapped[int] = mapped_column(
+        ForeignKey("email_connections.id", ondelete="CASCADE"), index=True
+    )
+
+    # Which classifier ran. Documents pass through more than one stage, so the attempt
+    # number below counts within a stage rather than across the document's whole life.
+    stage: Mapped[str]
+    attempt: Mapped[int]
+
+    status: Mapped[str]                          # success | failed
+
+    # Null on a failed attempt — there was no answer to record.
+    classification: Mapped[str | None] = mapped_column(default=None)
+    confidence: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # The model's justification on success, the error on failure. One column because both
+    # answer the same question when reading the log: why did this attempt end this way?
+    reason: Mapped[str | None] = mapped_column(Text, default=None)
+
+    model_version: Mapped[str]
+    prompt_version: Mapped[str]
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    # A retry that fires twice cannot write two rows both claiming to be attempt 2 — the
+    # second fails loudly instead of quietly corrupting the count that decides retries.
+    __table_args__ = (UniqueConstraint("document_id", "stage", "attempt"),)
 
 
 class Attachment(Base):
